@@ -23,6 +23,7 @@ app = FastAPI(
 # --- Configuração do CORS ---
 origins = [
     "https://jantar-muriloevictoria.vercel.app",
+    "https://jantar-muriloevictoria.vercel.app/",
 ]
 
 app.add_middleware(
