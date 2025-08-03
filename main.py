@@ -22,7 +22,8 @@ app = FastAPI(
 
 # --- Configuração do CORS ---
 origins = [
-    "https://jantar-muriloevictoria.vercel.app/",
+    "http://localhost:8081",
+    "https://jantar-muriloevictoria.vercel.app",
 ]
 
 app.add_middleware(
