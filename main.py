@@ -22,7 +22,6 @@ app = FastAPI(
 
 # --- Configuração do CORS ---
 origins = [
-    "http://localhost:8081",
     "https://jantar-muriloevictoria.vercel.app",
 ]
 
