@@ -7,20 +7,19 @@ from pymongo.errors import ConnectionFailure
 from bson import ObjectId
 from typing import List, Optional
 from datetime import datetime, timezone
-from dotenv import load_dotenv # NOVO: Importa a função para carregar variáveis de ambiente
+from dotenv import load_dotenv
 
-# NOVO: Carrega as variáveis de ambiente de um arquivo .env (ótimo para desenvolvimento local)
-# Em produção (Render, Vercel), as variáveis serão injetadas diretamente pelo ambiente.
 load_dotenv()
 
 # --- Configuração da Aplicação FastAPI ---
 app = FastAPI(
     title="API de Confirmação de Presença para Jantar",
-    description="Uma API para registrar e listar confirmações de presença em um evento usando FastAPI e MongoDB.",
-    version="1.0.0",
+    description="Uma API para registrar e listar confirmações de presença e autenticar o painel.",
+    version="1.1.0", # Versão atualizada para refletir a nova funcionalidade
 )
 
 # --- Configuração do CORS ---
+# Mantive as URLs que você configurou
 origins = [
     "https://jantar-muriloevictoria.vercel.app",
     "https://jantar-muriloevictoria.vercel.app/",
@@ -34,15 +33,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Conexão com o MongoDB Atlas (usando Variáveis de Ambiente) ---
-# ALTERADO: A URL de conexão agora é lida de uma variável de ambiente por segurança.
+# --- Conexão com o MongoDB Atlas ---
 MONGO_URI = os.getenv("MONGO_URI")
 DB_NAME = "jantar"
 COLLECTION_NAME = "confirmacoes"
 
-# NOVO: Adiciona uma verificação para garantir que a variável de ambiente foi carregada.
 if not MONGO_URI:
-    raise RuntimeError("A variável de ambiente MONGO_URI não foi definida. Crie um arquivo .env ou configure no seu provedor de hospedagem.")
+    raise RuntimeError("A variável de ambiente MONGO_URI não foi definida.")
 
 try:
     client = MongoClient(MONGO_URI)
@@ -58,7 +55,7 @@ except Exception as e:
     collection = None
 
 # --- Modelos de Dados (Pydantic) ---
-# (Nenhuma alteração nesta seção)
+
 class RSVPModel(BaseModel):
     nome: str = Field(..., min_length=2, description="Nome completo do convidado.")
     comparecera: bool = Field(..., description="Indica se o convidado irá comparecer.")
@@ -85,15 +82,18 @@ class RSVPResponse(RSVPModel):
             }
         }
 
+# NOVO: Modelo para o corpo da requisição de login
+class LoginRequest(BaseModel):
+    password: str = Field(..., description="Senha para acessar o painel.")
+
+
 # --- Funções Auxiliares ---
-# (Nenhuma alteração nesta seção)
 def convert_objectid_to_str(doc):
     if "_id" in doc and isinstance(doc["_id"], ObjectId):
         doc["_id"] = str(doc["_id"])
     return doc
 
 # --- Endpoints da API ---
-# (Nenhuma alteração nesta seção)
 @app.post(
     "/rsvp",
     response_model=RSVPResponse,
@@ -133,8 +133,34 @@ def listar_confirmacoes():
     confirmacoes = list(collection.find().sort("timestamp", -1))
     return [convert_objectid_to_str(c) for c in confirmacoes]
 
-# --- Ponto de entrada para debug (opcional) ---
-# (Nenhuma alteração nesta seção)
+# NOVO: Endpoint de login para o painel
+@app.post("/login", summary="Autentica o acesso ao painel", tags=["Painel"])
+def login_painel(request: LoginRequest):
+    """
+    Verifica se a senha fornecida corresponde à senha secreta do painel,
+    que está armazenada como uma variável de ambiente no servidor.
+    """
+    # Lê a senha correta da variável de ambiente no Render
+    correct_password = os.getenv("PANEL_PASSWORD")
+
+    # Verifica se a variável de ambiente foi configurada no servidor
+    if not correct_password:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="A senha do painel não está configurada no servidor."
+        )
+
+    # Compara a senha enviada com a senha correta
+    if request.password == correct_password:
+        return {"authenticated": True, "message": "Autenticação bem-sucedida."}
+    else:
+        # Lança um erro 401 Unauthorized se a senha estiver errada
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Senha incorreta."
+        )
+
+# --- Ponto de entrada para debug ---
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)
