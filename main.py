@@ -1,5 +1,6 @@
 import os
-from fastapi import FastAPI, HTTPException, status
+import re
+from fastapi import FastAPI, HTTPException, status, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pymongo import MongoClient
@@ -11,18 +12,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Configuração da Aplicação FastAPI ---
 app = FastAPI(
     title="API de Confirmação de Presença para Jantar",
     description="Uma API para registrar e listar confirmações de presença e autenticar o painel.",
-    version="1.1.0", # Versão atualizada para refletir a nova funcionalidade
+    version="1.2.0",
 )
 
-# --- Configuração do CORS ---
-# Mantive as URLs que você configurou
 origins = [
     "https://jantar-muriloevictoria.vercel.app",
-    "https://jantar-muriloevictoria.vercel.app/",
+    "http://localhost:3000",
 ]
 
 app.add_middleware(
@@ -33,7 +31,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Conexão com o MongoDB Atlas ---
 MONGO_URI = os.getenv("MONGO_URI")
 DB_NAME = "jantar"
 COLLECTION_NAME = "confirmacoes"
@@ -54,8 +51,6 @@ except Exception as e:
     print(f"Ocorreu um erro inesperado: {e}")
     collection = None
 
-# --- Modelos de Dados (Pydantic) ---
-
 class RSVPModel(BaseModel):
     nome: str = Field(..., min_length=2, description="Nome completo do convidado.")
     comparecera: bool = Field(..., description="Indica se o convidado irá comparecer.")
@@ -70,30 +65,20 @@ class RSVPResponse(RSVPModel):
     class Config:
         populate_by_name = True
         arbitrary_types_allowed = True
-        json_schema_extra = {
-            "example": {
-                "id": "60d5ec49f72e3e3b6c5a7e1a",
-                "nome": "João da Silva",
-                "comparecera": True,
-                "tem_filhos": False,
-                "nomes_dos_filhos": None,
-                "restricao_alimentar": "Nenhuma",
-                "timestamp": "2025-08-03T19:00:28.529Z"
-            }
-        }
+        json_schema_extra = { "example": { "id": "60d5ec49f72e3e3b6c5a7e1a", "nome": "João da Silva", "comparecera": True, "tem_filhos": False, "nomes_dos_filhos": None, "restricao_alimentar": "Nenhuma", "timestamp": "2025-08-03T19:00:28.529Z" } }
 
-# NOVO: Modelo para o corpo da requisição de login
 class LoginRequest(BaseModel):
     password: str = Field(..., description="Senha para acessar o painel.")
 
-
-# --- Funções Auxiliares ---
 def convert_objectid_to_str(doc):
     if "_id" in doc and isinstance(doc["_id"], ObjectId):
         doc["_id"] = str(doc["_id"])
     return doc
 
-# --- Endpoints da API ---
+@app.head("/rsvp", status_code=status.HTTP_200_OK, tags=["Health Check"])
+def health_check():
+    return Response(status_code=status.HTTP_200_OK)
+
 @app.post(
     "/rsvp",
     response_model=RSVPResponse,
@@ -103,19 +88,19 @@ def convert_objectid_to_str(doc):
 )
 def registrar_presenca(rsvp: RSVPModel):
     if collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Não foi possível conectar ao banco de dados.",
-        )
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Não foi possível conectar ao banco de dados.")
+
+    existing_rsvp = collection.find_one({ "nome": {"$regex": f"^{re.escape(rsvp.nome)}$", "$options": "i"} })
+    if existing_rsvp:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Este nome já foi registrado na lista de confirmação.")
+
     rsvp_dict = rsvp.model_dump()
     rsvp_dict["timestamp"] = datetime.now(timezone.utc)
     result = collection.insert_one(rsvp_dict)
     created_rsvp = collection.find_one({"_id": result.inserted_id})
     if not created_rsvp:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Não foi possível criar e recuperar o registro de confirmação.",
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Não foi possível criar e recuperar o registro de confirmação.")
+    
     return convert_objectid_to_str(created_rsvp)
 
 @app.get(
@@ -126,41 +111,29 @@ def registrar_presenca(rsvp: RSVPModel):
 )
 def listar_confirmacoes():
     if collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Não foi possível conectar ao banco de dados.",
-        )
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Não foi possível conectar ao banco de dados.")
+    
     confirmacoes = list(collection.find().sort("timestamp", -1))
     return [convert_objectid_to_str(c) for c in confirmacoes]
 
-# NOVO: Endpoint de login para o painel
 @app.post("/login", summary="Autentica o acesso ao painel", tags=["Painel"])
 def login_painel(request: LoginRequest):
-    """
-    Verifica se a senha fornecida corresponde à senha secreta do painel,
-    que está armazenada como uma variável de ambiente no servidor.
-    """
-    # Lê a senha correta da variável de ambiente no Render
     correct_password = os.getenv("PANEL_PASSWORD")
 
-    # Verifica se a variável de ambiente foi configurada no servidor
     if not correct_password:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="A senha do painel não está configurada no servidor."
         )
 
-    # Compara a senha enviada com a senha correta
     if request.password == correct_password:
         return {"authenticated": True, "message": "Autenticação bem-sucedida."}
     else:
-        # Lança um erro 401 Unauthorized se a senha estiver errada
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Senha incorreta."
         )
 
-# --- Ponto de entrada para debug ---
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)
